@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Шахматный тренажер</title>
+    <link rel="stylesheet" href="https://unpkg.com">
+    <style>
+        body { font-family: sans-serif; background: #2c2b29; color: #fff; display: flex; justify-content: center; padding: 30px; margin: 0; }
+        .layout { display: flex; gap: 25px; flex-wrap: wrap; max-width: 1000px; }
+        .panel { background: #363431; padding: 20px; border-radius: 10px; width: 300px; display: flex; flex-direction: column; gap: 15px; }
+        #board { width: 400px; }
+        input, select, button { padding: 10px; border-radius: 6px; border: none; font-size: 14px; }
+        input, select { background: #1e1d1b; color: #fff; border: 1px solid #555; }
+        button { background: #81b64c; color: #fff; font-weight: bold; cursor: pointer; }
+        button:hover { opacity: 0.9; }
+        .btn-sec { background: #4b4847; }
+        .row { display: flex; gap: 8px; }
+        .row input { flex: 1; }
+        #status { padding: 10px; border-radius: 6px; background: #262522; text-align: center; min-height: 20px; }
+        .ok { background: #3b5928 !important; color: #b9e896; }
+        .err { background: #6e2626 !important; color: #ffb3b3; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        td, th { padding: 6px; border-bottom: 1px solid #444; text-align: left; }
+        .token-info { font-size: 11px; color: #aaa; word-break: break-all; }
+    </style>
+</head>
+<body>
+
+<div class="layout">
+    <!-- Левая часть: доска -->
+    <div id="board"></div>
+
+    <!-- Центр: управление и ходы -->
+    <div class="panel">
+        <div id="authBox">
+            <div class="row">
+                <input type="text" id="nickInput" placeholder="Придумайте ник">
+                <button onclick="register()">Войти</button>
+            </div>
+        </div>
+        <div id="userBox" style="display:none;">
+            <div>Игрок: <b id="userNick"></b></div>
+            <div class="token-info" id="userToken"></div>
+        </div>
+
+        <div class="row">
+            <select id="levelSelect" onchange="loadLevel()">
+                <option value="1">Уровень 1 (Новичок)</option>
+                <option value="2">Уровень 2 (Любитель)</option>
+            </select>
+            <button class="btn-sec" onclick="nextTask()">Следующая</button>
+        </div>
+
+        <div id="status">Загрузка...</div>
+
+        <div class="row">
+            <input type="text" id="moveInput" placeholder="Ход (напр. f3f7 или Qxf7)" onkeypress="if(event.key==='Enter') sendMove()">
+            <button onclick="sendMove()">Ход</button>
+        </div>
+    </div>
+
+    <!-- Правая часть: Лидерборд -->
+    <div class="panel">
+        <div class="row" style="justify-content: space-between; align-items: center;">
+            <b>Лидерборд</b>
+            <button class="btn-sec" onclick="loadLeaderboard()">Обновить</button>
+        </div>
+        <table>
+            <thead><tr><th>#</th><th>Ник</th><th>Очки</th></tr></thead>
+            <tbody id="lbBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<script src="https://jquery.com"></script>
+<script src="https://unpkg.com"></script>
+<script src="https://cloudflare.com"></script>
+
+<script>
+let board = null;
+let game = new Chess();
+let tasks = [];
+let currentTask = null;
+
+// Инициализация доски
+board = Chessboard('board', {
+    draggable: true,
+    position: 'start',
+    pieceTheme: 'https://chessboardjs.com{piece}.png',
+    onDrop: (source, target) => {
+        if (source === target) return;
+        sendMove(source + target);
+        return 'snapback';
+    }
+});
+
+// Авто-вход по токену из localStorage
+async function autoLogin() {
+    const token = localStorage.getItem('chess_token');
+    if (!token) return;
+    const res = await fetch('/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({token})
+    });
+    if (res.ok) {
+        const data = await res.json();
+        showUser(data.nick, token);
+    }
+}
+
+async function register() {
+    const nick = document.getElementById('nickInput').value.trim();
+    if (!nick) return;
+    const res = await fetch('/register', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({nick})
+    });
+    const data = await res.json();
+    if (res.ok) {
+        localStorage.setItem('chess_token', data.token);
+        showUser(data.nick, data.token);
+        loadLeaderboard();
+    } else {
+        setStatus(data.error, 'err');
+    }
+}
+
+function showUser(nick, token) {
+    document.getElementById('authBox').style.display = 'none';
+    document.getElementById('userBox').style.display = 'block';
+    document.getElementById('userNick').textContent = nick;
+    document.getElementById('userToken').textContent = 'Ваш токен (сохранен): ' + token;
+}
+
+async function loadLevel() {
+    const level = document.getElementById('levelSelect').value;
+    const res = await fetch(`/tasks/${level}`);
+    tasks = await res.json();
+    nextTask();
+}
+
+function nextTask() {
+    if (!tasks.length) {
+        setStatus('В этом уровне пока нет задач', 'err');
+        return;
+    }
+    currentTask = tasks[Math.floor(Math.random() * tasks.length)];
+    game.load(currentTask.fen);
+    board.orientation(game.turn() === 'w' ? 'white' : 'black');
+    board.position(currentTask.fen);
+    setStatus(`Задача #${currentTask.id}. Ход ${game.turn() === 'w' ? 'белых' : 'черных'}.`, '');
+}
+
+async function sendMove(dragMove) {
+    if (!currentTask) return;
+    const input = document.getElementById('moveInput');
+    const move = dragMove || input.value.trim();
+    if (!move) return;
+
+    const res = await fetch('/solve', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({task_id: currentTask.id, move})
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+        setStatus(data.error, 'err');
+        return;
+    }
+
+    if (data.ok) {
+        // Применяем ход на визуальной доске
+        game.move(move, {sloppy: true});
+        board.position(game.fen());
+        setStatus('Верно! Очко начислено.', 'ok');
+        input.value = '';
+        loadLeaderboard(); // Сразу обновляем таблицу лидеров
+    } else {
+        setStatus('Неправильный ход. Попробуйте еще раз!', 'err');
+    }
+}
+
+async function loadLeaderboard() {
+    const res = await fetch('/leaderboard');
+    const rows = await res.json();
+    const tbody = document.getElementById('lbBody');
+    tbody.innerHTML = rows.map((r, i) => 
+        `<tr><td>${i + 1}</td><td>${r.nick}</td><td><b>${r.pts}</b></td></tr>`
+    ).join('');
+}
+
+function setStatus(text, cls) {
+    const el = document.getElementById('status');
+    el.textContent = text;
+    el.className = cls;
+}
+
+// Запуск при открытии страницы
+autoLogin();
+loadLevel();
+loadLeaderboard();
+</script>
+
+</body>
+</html>
